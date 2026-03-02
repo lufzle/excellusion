@@ -1,6 +1,6 @@
 # Excellusion
 
-A spreadsheet with no spreadsheet.
+A spreadsheet with no spreadsheet. **[Try it live](https://lufzle.github.io/excellusion/)**
 
 > *The simulacrum is never that which conceals the truth — it is the truth which conceals that there is none.*
 > — Jean Baudrillard

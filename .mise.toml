@@ -1,0 +1,10 @@
+[tools]
+node = "22"
+
+[tasks.dev]
+run = "pnpm dev"
+description = "Start dev server"
+
+[tasks.check]
+run = "pnpm check"
+description = "Lint + typecheck"

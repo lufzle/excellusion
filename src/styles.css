@@ -1,0 +1,23 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'Aptos';
+  src: local('Aptos'), local('Calibri'), local('Segoe UI');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@keyframes cell-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #217346; }
+  50% { border-color: #4ea46e; }
+}
+
+@keyframes status-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

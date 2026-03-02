@@ -22,13 +22,9 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
       lineHeight: '1.6',
     }}>
       <div className="shrink-0 px-3 py-1.5" style={{
-        background: '#2d2d2d',
-        color: '#888',
-        fontSize: 10,
-        borderBottom: '1px solid #3a3a3a',
-        fontWeight: 600,
-        letterSpacing: '0.05em',
-        textTransform: 'uppercase',
+        background: '#2d2d2d', color: '#888', fontSize: 10,
+        borderBottom: '1px solid #3a3a3a', fontWeight: 600,
+        letterSpacing: '0.05em', textTransform: 'uppercase',
       }}>
         LLM Messages
       </div>
@@ -51,8 +47,14 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
             ) : mode === 'hybrid' && entry.role === 'assistant' ? (
               <HybridAssistantContent content={entry.content} />
             ) : (
-              <span style={{ color: entry.role === 'user' ? '#ce9178' : '#6a9955', wordBreak: 'break-all' }}>
-                {entry.content.length > 200 ? entry.content.slice(0, 200) + '...' : entry.content}
+              <span>
+                {entry.image && (
+                  <img src={`data:image/png;base64,${entry.image}`}
+                    style={{ maxWidth: '100%', borderRadius: 3, marginBottom: 4, display: 'block' }} />
+                )}
+                <span style={{ color: entry.role === 'user' ? '#ce9178' : '#6a9955', wordBreak: 'break-all' }}>
+                  {entry.content.length > 200 ? entry.content.slice(0, 200) + '...' : entry.content}
+                </span>
               </span>
             )}
           </div>
@@ -66,54 +68,21 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
 function HybridUserContent({ content }: { content: string }) {
   try {
     const parsed = JSON.parse(content)
-    return (
-      <span>
-        <Punct>{'{'}</Punct>
-        <Key>c</Key><Punct>:</Punct> <Str>{parsed.c}</Str>
-        <Punct>, </Punct>
-        <Key>e</Key><Punct>:</Punct> <Str>{parsed.e}</Str>
-        <Punct>{'}'}</Punct>
-      </span>
-    )
-  } catch {
-    return <span style={{ color: '#ce9178' }}>{content}</span>
-  }
+    return (<span><Punct>{'{'}</Punct><Key>c</Key><Punct>:</Punct> <Str>{parsed.c}</Str><Punct>, </Punct><Key>e</Key><Punct>:</Punct> <Str>{parsed.e}</Str><Punct>{'}'}</Punct></span>)
+  } catch { return <span style={{ color: '#ce9178' }}>{content}</span> }
 }
-
 function HybridAssistantContent({ content }: { content: string }) {
   try {
     const parsed = JSON.parse(content)
     if (!Array.isArray(parsed)) throw new Error()
-    return (
-      <span>
-        <Punct>[</Punct>
-        {parsed.map((cell: { c: string; e?: string; v?: string }, i: number) => (
-          <span key={i}>
-            {i > 0 && <Punct>, </Punct>}
-            <Punct>{'{'}</Punct>
-            <Key>c</Key><Punct>:</Punct><Str>{cell.c}</Str>
-            {cell.e && <><Punct>,</Punct><Key>e</Key><Punct>:</Punct><Str>{cell.e}</Str></>}
-            {cell.v && <><Punct>,</Punct><Key>v</Key><Punct>:</Punct><Num>{cell.v}</Num></>}
-            <Punct>{'}'}</Punct>
-          </span>
-        ))}
-        <Punct>]</Punct>
-      </span>
-    )
-  } catch {
-    return <span style={{ color: '#6a9955' }}>{content.length > 200 ? content.slice(0, 200) + '...' : content}</span>
-  }
+    return (<span><Punct>[</Punct>{parsed.map((cell: { c: string; e?: string; v?: string }, i: number) => (
+      <span key={i}>{i > 0 && <Punct>, </Punct>}<Punct>{'{'}</Punct><Key>c</Key><Punct>:</Punct><Str>{cell.c}</Str>
+        {cell.e && <><Punct>,</Punct><Key>e</Key><Punct>:</Punct><Str>{cell.e}</Str></>}
+        {cell.v && <><Punct>,</Punct><Key>v</Key><Punct>:</Punct><Num>{cell.v}</Num></>}<Punct>{'}'}</Punct></span>
+    ))}<Punct>]</Punct></span>)
+  } catch { return <span style={{ color: '#6a9955' }}>{content.length > 200 ? content.slice(0, 200) + '...' : content}</span> }
 }
-
-function Punct({ children }: { children: React.ReactNode }) {
-  return <span style={{ color: '#808080' }}>{children}</span>
-}
-function Key({ children }: { children: React.ReactNode }) {
-  return <span style={{ color: '#9cdcfe' }}>{children}</span>
-}
-function Str({ children }: { children: React.ReactNode }) {
-  return <span style={{ color: '#ce9178' }}>"{children}"</span>
-}
-function Num({ children }: { children: React.ReactNode }) {
-  return <span style={{ color: '#b5cea8' }}>"{children}"</span>
-}
+function Punct({ children }: { children: React.ReactNode }) { return <span style={{ color: '#808080' }}>{children}</span> }
+function Key({ children }: { children: React.ReactNode }) { return <span style={{ color: '#9cdcfe' }}>{children}</span> }
+function Str({ children }: { children: React.ReactNode }) { return <span style={{ color: '#ce9178' }}>"{children}"</span> }
+function Num({ children }: { children: React.ReactNode }) { return <span style={{ color: '#b5cea8' }}>"{children}"</span> }

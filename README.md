@@ -18,7 +18,7 @@ Key points from the accompanying blog post:
 - We don't verify software by inspecting its mechanism. We treat it as a black box: feed input, assert output. If the tests pass, the contract is honored.
 - Two boxes — one running a formula parser, one running a model that predicts what a formula parser would output — are indistinguishable if both satisfy the same contract.
 
-[Read the full essay: *Nobody Wrote the Matrix*](https://lufzle.fika.bar/nobody-wrote-the-matrix-01KJNMM4B53CB0DYHXFMQ0FS1A)
+[Read the full essay: *Nobody Wrote the Matrix*](https://lufzle.dev/write/nobody-wrote-the-matrix/)
 
 ## What this project demonstrates
 

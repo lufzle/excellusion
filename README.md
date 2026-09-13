@@ -5,7 +5,7 @@ A spreadsheet with no spreadsheet. **[Try it live](https://lufzle.github.io/exce
 > *The simulacrum is never that which conceals the truth — it is the truth which conceals that there is none.*
 > — Jean Baudrillard
 
-![Excellusion demo](assets/excellusion-demo.mp4)
+https://github.com/user-attachments/assets/ec653d3e-50ef-4820-861f-f1c91fa899db
 
 ## The argument
 

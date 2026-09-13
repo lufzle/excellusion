@@ -2,6 +2,8 @@
 
 A spreadsheet with no spreadsheet. **[Try it live](https://lufzle.github.io/excellusion/)** · **[Read the essay](https://lufzle.dev/write/nobody-wrote-the-matrix/)**
 
+<video src="./assets/excellusion-demo.mp4" controls muted playsinline loop width="100%"></video>
+
 > *The simulacrum is never that which conceals the truth — it is the truth which conceals that there is none.*
 > — Jean Baudrillard
 

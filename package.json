@@ -8,13 +8,17 @@
     "preview": "vite preview",
     "lint": "oxlint src/",
     "typecheck": "tsc --noEmit",
-    "check": "oxlint src/ && tsc --noEmit"
+    "check": "oxlint src/ && tsc --noEmit",
+    "test": "vitest run",
+    "test:baseline": "PERF_LABEL=baseline vitest run",
+    "test:after": "PERF_LABEL=after vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.125.0",
     "@tailwindcss/vite": "^4.1.8",
     "@vitejs/plugin-react": "^4.5.2",
     "html2canvas": "^1.4.1",
+    "openai": "^7.15.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.1.8",
@@ -26,6 +30,7 @@
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
     "oxlint": "^1.50.0",
-    "typescript": "^5.9.0-beta"
+    "typescript": "^5.9.0-beta",
+    "vitest": "^3.2.4"
   }
 }

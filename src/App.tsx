@@ -1,10 +1,21 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo, useEffect } from 'react'
 import { HybridSheet } from '~/components/HybridSheet'
 import { FullSheet } from '~/components/FullSheet'
 import { LogPane } from '~/components/LogPane'
 import type { LogEntry } from '~/components/LogPane'
-import { createClient } from '~/lib/llm'
-import type Anthropic from '@anthropic-ai/sdk'
+import {
+  createClient,
+  prewarmCache,
+  HYBRID_SYSTEM,
+  FULL_SYSTEM,
+  DEFAULT_MODEL_ID,
+  KEY_LABEL,
+  KEY_PLACEHOLDER,
+  KEY_STORAGE,
+  MODEL_GROUPS,
+  getModel,
+} from '~/lib/llm'
+import type { LlmClient, ModelChoiceId, ProviderId } from '~/lib/llm'
 
 const HYBRID_EXPLANATION = `The building has a front door, but nothing behind it. This spreadsheet UI is coded in React — the grid, the formula bar, the selection, the cursor. But there is no data layer. No variables hold cell values. No formula parser. No evaluation engine. When you type =A1+1 and press Enter, the LLM predicts what a spreadsheet should show next. It returns 11 — not because it computed it, but because it has seen enough spreadsheets to know what happens. The contract is honored. The mechanism is absent.`
 
@@ -12,21 +23,58 @@ const FULL_EXPLANATION = `There is no building at all. Not even a front door. Th
 
 type Tab = 'hybrid' | 'full'
 
+function readModel(): ModelChoiceId {
+  return DEFAULT_MODEL_ID
+}
+
+function emptyKeys(): Record<ProviderId, string> {
+  return {
+    anthropic: sessionStorage.getItem(KEY_STORAGE.anthropic) ?? '',
+    openai: sessionStorage.getItem(KEY_STORAGE.openai) ?? '',
+    openrouter: sessionStorage.getItem(KEY_STORAGE.openrouter) ?? '',
+    chatjimmy: '',
+  }
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>('hybrid')
-  const [apiKey, setApiKey] = useState(() => sessionStorage.getItem('anthropic_api_key') ?? '')
+  const [modelId, setModelId] = useState<ModelChoiceId>(readModel)
+  const [keys, setKeys] = useState<Record<ProviderId, string>>(emptyKeys)
   const [hybridLogs, setHybridLogs] = useState<LogEntry[]>([])
   const [fullLogs, setFullLogs] = useState<LogEntry[]>([])
 
-  const client = useMemo<Anthropic | null>(
-    () => apiKey ? createClient(apiKey) : null,
-    [apiKey],
-  )
+  const spec = getModel(modelId)
+  const provider = spec.provider
+  const needsKey = provider !== 'chatjimmy'
+  const apiKey = keys[provider] ?? ''
+
+  const client = useMemo<LlmClient | null>(() => {
+    if (!needsKey) return createClient(modelId, '')
+    return apiKey ? createClient(modelId, apiKey) : null
+  }, [modelId, apiKey, needsKey])
+
+  useEffect(() => {
+    if (!client) return
+    let cancelled = false
+    Promise.all([
+      prewarmCache(client, HYBRID_SYSTEM),
+      prewarmCache(client, FULL_SYSTEM),
+    ]).catch((err) => {
+      if (!cancelled) console.warn('cache prewarm failed', err)
+    })
+    return () => { cancelled = true }
+  }, [client])
+
+  const handleModelChange = useCallback((next: ModelChoiceId) => {
+    setModelId(next)
+    setHybridLogs([])
+    setFullLogs([])
+  }, [])
 
   const handleApiKeyChange = useCallback((value: string) => {
-    setApiKey(value)
-    sessionStorage.setItem('anthropic_api_key', value)
-  }, [])
+    setKeys((prev) => ({ ...prev, [provider]: value }))
+    sessionStorage.setItem(KEY_STORAGE[provider], value)
+  }, [provider])
 
   const addHybridLog = useCallback((entry: LogEntry) => {
     setHybridLogs((prev) => [...prev, entry])
@@ -51,11 +99,14 @@ export function App() {
     full: fullLogs,
   }
 
+  const keyPlaceholder = KEY_PLACEHOLDER[provider]
+  const keyLabel = KEY_LABEL[provider]
+  const emptyHint = needsKey ? `Enter your ${keyLabel} above to start.` : 'ChatJimmy is ready.'
+
   return (
     <div className="flex flex-col h-screen select-none"
       style={{ fontFamily: "'Aptos', 'Calibri', 'Segoe UI', system-ui, sans-serif" }}>
 
-      {/* Title bar */}
       <div className="h-8 flex items-center px-3 gap-2 shrink-0"
         style={{
           background: 'linear-gradient(180deg, #1e3a2a 0%, #162e22 100%)',
@@ -68,64 +119,111 @@ export function App() {
         <span className="text-white/80 text-[11px] font-medium tracking-wide">
           Excellusion
         </span>
+        <a
+          href="https://lufzle.dev/write/nobody-wrote-the-matrix/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-white/45 hover:text-white/80 text-[10px] underline underline-offset-2"
+        >
+          Read the essay
+        </a>
         <div className="ml-auto flex items-center gap-1.5">
-          <label className="text-white/40 text-[10px]" htmlFor="api-key">Anthropic API Key</label>
-          <div className="relative group">
-            <div className="flex items-center justify-center cursor-help" style={{
-              width: 14, height: 14, borderRadius: '50%',
-              border: '1px solid rgba(255,255,255,0.25)',
-              fontSize: 9, color: 'rgba(255,255,255,0.4)',
-            }}>?</div>
-            <div className="absolute right-0 top-5 hidden group-hover:block" style={{ zIndex: 100 }}>
-              <div style={{
-                background: '#333', border: '1px solid #444', borderRadius: 6,
-                padding: '8px 12px', width: 220, fontSize: 10, lineHeight: '1.5',
-                color: '#ccc', boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-              }}>
-                Your API key is stored in sessionStorage and never sent to any server. It will be lost when you close this tab. All LLM requests go directly from your browser to the Anthropic API.
-              </div>
-            </div>
-          </div>
-          <input
-            id="api-key"
-            type="password"
-            placeholder="sk-ant-..."
-            value={apiKey}
-            onChange={(e) => handleApiKeyChange(e.target.value)}
-            className="text-[10px] px-1.5 py-0.5 rounded"
+          <select
+            aria-label="Model"
+            value={modelId}
+            onChange={(e) => handleModelChange(e.target.value as ModelChoiceId)}
+            className="text-[10px] px-1 py-0.5 rounded cursor-pointer"
             style={{
-              width: 180,
               background: 'rgba(255,255,255,0.08)',
               border: '1px solid rgba(255,255,255,0.15)',
               color: 'rgba(255,255,255,0.8)',
               outline: 'none',
+              maxWidth: 190,
             }}
-          />
+          >
+            {MODEL_GROUPS.map((group) => (
+              <optgroup key={group.group} label={group.group}>
+                {group.models.map((m) => (
+                  <option key={m.id} value={m.id} style={{ color: '#111' }}>{m.label}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          {needsKey ? (
+            <>
+              <label className="text-white/40 text-[10px]" htmlFor="api-key">{keyLabel}</label>
+              <div className="relative group">
+                <div className="flex items-center justify-center cursor-help" style={{
+                  width: 14, height: 14, borderRadius: '50%',
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  fontSize: 9, color: 'rgba(255,255,255,0.4)',
+                }}>?</div>
+                <div className="absolute right-0 top-5 hidden group-hover:block" style={{ zIndex: 100 }}>
+                  <div style={{
+                    background: '#333', border: '1px solid #444', borderRadius: 6,
+                    padding: '8px 12px', width: 240, fontSize: 10, lineHeight: '1.5',
+                    color: '#ccc', boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                  }}>
+                    Your API key is stored in sessionStorage and never sent to any server. It will be lost when you close this tab. Requests go from your browser to {spec.group} ({spec.apiModel}). Test keys in .env are not used here.
+                  </div>
+                </div>
+              </div>
+              <input
+                id="api-key"
+                type="password"
+                placeholder={keyPlaceholder}
+                value={apiKey}
+                onChange={(e) => handleApiKeyChange(e.target.value)}
+                className="text-[10px] px-1.5 py-0.5 rounded"
+                style={{
+                  width: 180,
+                  background: 'rgba(255,255,255,0.08)',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  color: 'rgba(255,255,255,0.8)',
+                  outline: 'none',
+                }}
+              />
+            </>
+          ) : (
+            <span className="text-white/40 text-[10px]">
+              No API key · llama3.1-8B via{' '}
+              <a
+                href="https://chatjimmy.ai/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white/70 hover:text-white underline underline-offset-2"
+              >
+                chatjimmy.ai
+              </a>
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Mode tabs */}
       <div className="flex items-end px-2 gap-0 shrink-0 border-b"
         style={{
           background: '#252525',
           borderColor: '#333',
         }}>
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className="pb-1.5 pt-1.5 px-4 text-[11px] border-b-2 transition-colors cursor-pointer"
-            style={{
-              color: tab === t.id ? '#4ec9b0' : '#888',
-              borderColor: tab === t.id ? '#4ec9b0' : 'transparent',
-              fontWeight: tab === t.id ? 600 : 400,
-            }}>
-            {t.label}
-          </button>
-        ))}
+        {tabs.map((t) => {
+          const fullBlocked = t.id === 'full' && provider === 'chatjimmy'
+          const active = tab === t.id
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className="pb-1.5 pt-1.5 px-4 text-[11px] border-b-2 transition-colors cursor-pointer"
+              style={{
+                color: fullBlocked ? '#555' : active ? '#4ec9b0' : '#888',
+                borderColor: active ? (fullBlocked ? '#555' : '#4ec9b0') : 'transparent',
+                fontWeight: active ? 600 : 400,
+              }}>
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      {/* Explanation panel */}
       <div className="shrink-0 px-4 py-3 border-b select-text"
         style={{
           background: '#1e1e1e',
@@ -137,26 +235,28 @@ export function App() {
         {explanations[tab]}
       </div>
 
-      {/* Sheet + Log pane */}
       <div className="flex flex-1 overflow-hidden" style={{ background: '#1a1a1a' }}>
         <div className="flex-1 flex flex-col overflow-hidden">
           {!client ? (
             <div className="flex-1 flex items-center justify-center text-[13px]" style={{ color: '#555' }}>
-              Enter your Anthropic API key above to start.
+              {emptyHint}
+            </div>
+          ) : tab === 'full' && provider === 'chatjimmy' ? (
+            <div className="flex-1 flex items-center justify-center text-[13px]" style={{ color: '#888' }}>
+              Too complex for this model
             </div>
           ) : (
             <>
-              {tab === 'hybrid' && <HybridSheet client={client} onLog={addHybridLog} />}
-              {tab === 'full' && <FullSheet client={client} onLog={addFullLog} />}
+              {tab === 'hybrid' && <HybridSheet key={`hybrid-${modelId}`} client={client} onLog={addHybridLog} />}
+              {tab === 'full' && <FullSheet key={`full-${modelId}`} client={client} onLog={addFullLog} />}
             </>
           )}
         </div>
         <div style={{ width: 360, borderLeft: '1px solid #2a2a2a' }} className="shrink-0">
-          <LogPane entries={logs[tab]} mode={tab === 'hybrid' ? 'hybrid' : 'full'} />
+          <LogPane entries={logs[tab]} mode={tab === 'hybrid' ? 'hybrid' : 'full'} spec={spec} />
         </div>
       </div>
 
-      {/* Status bar */}
       <div className="flex items-center shrink-0 px-3"
         style={{
           background: '#1e3a2a',
@@ -164,7 +264,7 @@ export function App() {
           fontSize: 10,
           color: 'rgba(255,255,255,0.4)',
         }}>
-        <span>Ready</span>
+        <span>Ready · {spec.label} · effort {spec.effort}</span>
       </div>
     </div>
   )

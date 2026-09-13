@@ -1,111 +1,208 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import html2canvas from 'html2canvas'
-import type Anthropic from '@anthropic-ai/sdk'
-import { streamChat, FULL_SYSTEM } from '~/lib/llm'
+import { completeChat, FULL_SYSTEM, sanitizeFullHtml, emptyUsage } from '~/lib/llm'
+import type { ChatTurn, LlmClient } from '~/lib/llm'
 import type { LogEntry } from '~/components/LogPane'
+import { SheetHelp } from '~/components/SheetHelp'
 
-function stripFences(s: string): string {
-  let r = s
-  if (r.startsWith('```')) r = r.replace(/^```(?:html)?\n?/, '')
-  if (r.endsWith('```')) r = r.replace(/\n?```$/, '')
-  return r
+const CAPTURE_SCALE = 0.5
+const PAINT_MS = 400
+
+function pointInElement(e: MouseEvent, el: HTMLElement) {
+  const rect = el.getBoundingClientRect()
+  return {
+    x: e.clientX - rect.left + el.scrollLeft,
+    y: e.clientY - rect.top + el.scrollTop,
+  }
+}
+
+function hitFromEvent(e: MouseEvent, doc: Document) {
+  const el = (e.target instanceof Element ? e.target : null)
+    ?? doc.elementFromPoint(e.clientX, e.clientY)
+  if (!el) return { hit: 'other' as const }
+  const cell = el.closest('[data-cell]')
+  if (cell) {
+    return {
+      hit: 'cell' as const,
+      dataCell: (cell.getAttribute('data-cell') || '').toUpperCase(),
+      targetTag: el.tagName.toLowerCase(),
+      targetId: (el as HTMLElement).id || undefined,
+    }
+  }
+  if (el.closest('#fxv') || el.id === 'fxv') {
+    return { hit: 'formula' as const, targetId: 'fxv', targetTag: el.tagName.toLowerCase() }
+  }
+  if (el.closest('#fx')) {
+    return { hit: 'formula-bar' as const, targetId: 'fx', targetTag: el.tagName.toLowerCase() }
+  }
+  const th = el.closest('th')
+  if (th) {
+    const text = (th.textContent || '').trim().toUpperCase()
+    if (/^[A-B]$/.test(text)) return { hit: 'col-header' as const, dataCell: text, targetTag: 'th' }
+    if (/^[1-4]$/.test(text)) return { hit: 'row-header' as const, dataCell: text, targetTag: 'th' }
+  }
+  return {
+    hit: 'other' as const,
+    targetTag: el.tagName.toLowerCase(),
+    targetText: el.textContent?.trim().slice(0, 40) || undefined,
+  }
+}
+
+function placeCrosshair(body: HTMLElement, x: number, y: number) {
+  const prev = body.style.position
+  if (!prev || prev === 'static') body.style.position = 'relative'
+  const mark = body.ownerDocument.createElement('div')
+  mark.setAttribute('data-cursor-mark', '1')
+  mark.style.cssText = [
+    'position:absolute',
+    `left:${x}px`,
+    `top:${y}px`,
+    'width:0',
+    'height:0',
+    'pointer-events:none',
+    'z-index:2147483647',
+  ].join(';')
+  mark.innerHTML = [
+    '<span style="position:absolute;left:-12px;top:-1px;width:24px;height:2px;background:#ff0000"></span>',
+    '<span style="position:absolute;left:-1px;top:-12px;width:2px;height:24px;background:#ff0000"></span>',
+    '<span style="position:absolute;left:-5px;top:-5px;width:10px;height:10px;border:2px solid #ff0000;border-radius:50%;box-sizing:border-box;background:transparent"></span>',
+  ].join('')
+  body.appendChild(mark)
+  return () => {
+    mark.remove()
+    body.style.position = prev
+  }
 }
 
 async function captureIframe(
   iframe: HTMLIFrameElement,
   cursor?: { x: number; y: number },
-): Promise<string> {
+): Promise<{ data: string; mime: 'image/jpeg' }> {
   const body = iframe.contentDocument?.body
   if (!body) throw new Error('no iframe body')
 
-  const canvas = await html2canvas(body, {
-    scale: 1,
-    width: body.scrollWidth,
-    height: body.scrollHeight,
-  })
+  const cleanup = cursor ? placeCrosshair(body, cursor.x, cursor.y) : undefined
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
-  if (cursor) {
-    const ctx = canvas.getContext('2d')!
-    ctx.strokeStyle = '#ff0000'
-    ctx.lineWidth = 2
-    ctx.beginPath()
-    ctx.moveTo(cursor.x - 12, cursor.y)
-    ctx.lineTo(cursor.x + 12, cursor.y)
-    ctx.moveTo(cursor.x, cursor.y - 12)
-    ctx.lineTo(cursor.x, cursor.y + 12)
-    ctx.stroke()
-    ctx.beginPath()
-    ctx.arc(cursor.x, cursor.y, 5, 0, Math.PI * 2)
-    ctx.stroke()
+  try {
+    const win = iframe.contentWindow
+    const viewW = win?.innerWidth ?? iframe.clientWidth
+    const viewH = win?.innerHeight ?? iframe.clientHeight
+    const canvas = await html2canvas(body, {
+      scale: CAPTURE_SCALE,
+      backgroundColor: '#ffffff',
+      logging: false,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: viewW,
+      windowHeight: viewH,
+      onclone(clonedDoc) {
+        clonedDoc.documentElement.style.width = `${viewW}px`
+        const b = clonedDoc.body
+        if (b) {
+          b.style.margin = '0'
+          b.style.padding = '0'
+          b.style.width = `${viewW}px`
+        }
+      },
+    })
+    return { data: canvas.toDataURL('image/jpeg', 0.65).split(',')[1], mime: 'image/jpeg' }
+  } finally {
+    cleanup?.()
   }
-
-  return canvas.toDataURL('image/png').split(',')[1]
 }
 
-export function FullSheet({ client, onLog }: { client: Anthropic; onLog: (entry: LogEntry) => void }) {
+export function FullSheet({ client, onLog }: { client: LlmClient; onLog: (entry: LogEntry) => void }) {
   const [loading, setLoading] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const loadingRef = useRef(false)
   const messagesRef = useRef<any[]>([])
 
   const streamIntoIframe = useCallback(
-    async (messages: any[]): Promise<string> => {
+    async (messages: any[]): Promise<ChatTurn> => {
       const iframe = iframeRef.current
       if (!iframe) throw new Error('no iframe')
 
       let full = ''
-      let dirty = false
+      let lastPaint = 0
+      let paintTimer: ReturnType<typeof setTimeout> | undefined
 
-      const renderInterval = setInterval(() => {
-        if (!dirty) return
-        dirty = false
-        iframe.srcdoc = stripFences(full)
-      }, 150)
-
-      try {
-        for await (const chunk of streamChat(client, FULL_SYSTEM, messages)) {
-          full += chunk
-          dirty = true
+      const paint = (force = false) => {
+        const now = Date.now()
+        if (!force && now - lastPaint < PAINT_MS) {
+          if (!paintTimer) {
+            paintTimer = setTimeout(() => {
+              paintTimer = undefined
+              paint(true)
+            }, PAINT_MS - (now - lastPaint))
+          }
+          return
         }
-      } finally {
-        clearInterval(renderInterval)
+        lastPaint = now
+        iframe.srcdoc = sanitizeFullHtml(full)
       }
 
-      const final = stripFences(full.trim())
+      let turn: ChatTurn = { text: '', usage: emptyUsage(), ttftMs: 0, totalMs: 0 }
+      try {
+        turn = await completeChat(client, FULL_SYSTEM, messages, 'full', (chunk) => {
+          full += chunk
+          paint()
+        })
+      } finally {
+        if (paintTimer) clearTimeout(paintTimer)
+      }
+
+      const final = sanitizeFullHtml(turn.text)
       iframe.srcdoc = final
-      return final
+      return { ...turn, text: final }
     },
     [client],
   )
 
   const sendEvent = useCallback(
-    async (event: object, screenshot?: string) => {
+    async (event: object, screenshot?: { data: string; mime: 'image/jpeg' }) => {
       if (loadingRef.current) return
       loadingRef.current = true
       setLoading(true)
 
+      const eventStr = JSON.stringify(event)
       const content: any[] = []
       if (screenshot) {
         content.push({
           type: 'image',
-          source: { type: 'base64', media_type: 'image/png', data: screenshot },
+          source: { type: 'base64', media_type: screenshot.mime, data: screenshot.data },
         })
       }
-      content.push({ type: 'text', text: JSON.stringify(event) })
+      content.push({ type: 'text', text: eventStr })
 
-      const userMsg = { role: 'user', content }
-      const newMessages = [...messagesRef.current, userMsg]
+      const liveUser = { role: 'user', content }
+      const historyUser = { role: 'user', content: eventStr }
+      const newMessages = [...messagesRef.current, liveUser]
 
-      const eventStr = JSON.stringify(event)
-      onLog({ role: 'user', content: eventStr, timestamp: Date.now(), image: screenshot })
+      onLog({
+        role: 'user',
+        content: eventStr,
+        timestamp: Date.now(),
+        image: screenshot?.data,
+        imageMime: screenshot?.mime,
+      })
 
       try {
-        const final = await streamIntoIframe(newMessages)
-        const assistantMsg = { role: 'assistant', content: final }
-        messagesRef.current = [...newMessages, assistantMsg]
-        onLog({ role: 'assistant', content: final.length > 300 ? final.slice(0, 300) + '…' : final, timestamp: Date.now() })
+        const turn = await streamIntoIframe(newMessages)
+        const assistantMsg = { role: 'assistant', content: turn.text }
+        messagesRef.current = [...messagesRef.current, historyUser, assistantMsg]
+        onLog({
+          role: 'assistant',
+          content: turn.text.length > 300 ? turn.text.slice(0, 300) + '…' : turn.text,
+          timestamp: Date.now(),
+          usage: turn.usage,
+          ttftMs: turn.ttftMs,
+          totalMs: turn.totalMs,
+        })
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
         console.error('LLM failed:', err)
+        onLog({ role: 'assistant', content: message, timestamp: Date.now() })
       } finally {
         setLoading(false)
         loadingRef.current = false
@@ -125,12 +222,12 @@ export function FullSheet({ client, onLog }: { client: Anthropic; onLog: (entry:
     doc.body?.setAttribute('tabindex', '0')
     doc.body?.focus()
 
-    function serializeMouse(e: MouseEvent) {
+    function serializeMouse(e: MouseEvent, point: { x: number; y: number }) {
       return {
         type: e.type, button: e.button, buttons: e.buttons, detail: e.detail,
-        clientX: e.clientX, clientY: e.clientY, offsetX: e.offsetX, offsetY: e.offsetY,
-        pageX: e.pageX, pageY: e.pageY, screenX: e.screenX, screenY: e.screenY,
+        clientX: Math.round(point.x), clientY: Math.round(point.y),
         altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey,
+        ...hitFromEvent(e, doc as Document),
       }
     }
 
@@ -146,10 +243,11 @@ export function FullSheet({ client, onLog }: { client: Anthropic; onLog: (entry:
       if (loadingRef.current) return
       const body = doc.body
       if (!body) return
-      if (e.clientX > body.scrollWidth || e.clientY > body.scrollHeight) return
+      const point = pointInElement(e, body)
+      if (point.x < 0 || point.y < 0 || point.x > body.scrollWidth || point.y > body.scrollHeight) return
       e.preventDefault()
-      const screenshot = await captureIframe(iframeRef.current!, { x: e.clientX, y: e.clientY })
-      sendEventRef.current(serializeMouse(e), screenshot)
+      const screenshot = await captureIframe(iframeRef.current!, point)
+      sendEventRef.current(serializeMouse(e, point), screenshot)
     }
 
     doc.onmousedown = handleMouse
@@ -175,12 +273,21 @@ export function FullSheet({ client, onLog }: { client: Anthropic; onLog: (entry:
       const initMsg = { role: 'user', content: '{"type":"init"}' }
       onLog({ role: 'user', content: '{"type":"init"}', timestamp: Date.now() })
       try {
-        const final = await streamIntoIframe([initMsg])
-        messagesRef.current = [initMsg, { role: 'assistant', content: final }]
-        onLog({ role: 'assistant', content: final.length > 300 ? final.slice(0, 300) + '…' : final, timestamp: Date.now() })
+        const turn = await streamIntoIframe([initMsg])
+        messagesRef.current = [initMsg, { role: 'assistant', content: turn.text }]
+        onLog({
+          role: 'assistant',
+          content: turn.text.length > 300 ? turn.text.slice(0, 300) + '…' : turn.text,
+          timestamp: Date.now(),
+          usage: turn.usage,
+          ttftMs: turn.ttftMs,
+          totalMs: turn.totalMs,
+        })
         setTimeout(attachListeners, 50)
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
         console.error('Failed to load:', err)
+        onLog({ role: 'assistant', content: message, timestamp: Date.now() })
       } finally {
         setLoading(false)
         loadingRef.current = false
@@ -209,7 +316,9 @@ export function FullSheet({ client, onLog }: { client: Anthropic; onLog: (entry:
           <span style={{ flex: 1, textAlign: 'center', fontSize: 12, color: '#999', fontWeight: 500 }}>
             Excellusion
           </span>
-          <div style={{ width: 52 }} />
+          <div style={{ width: 52, display: 'flex', justifyContent: 'flex-end' }}>
+            <SheetHelp />
+          </div>
         </div>
         {/* Loading bar */}
         {loading && (

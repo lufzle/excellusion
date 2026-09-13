@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import { HYBRID_SYSTEM, FULL_SYSTEM } from '~/lib/llm'
+import { HYBRID_SYSTEM, FULL_SYSTEM, HYBRID_MAX_TOKENS, FULL_MAX_TOKENS, modelLabel, cacheLabel, effortLabel, parseHybridCells } from '~/lib/llm'
+import type { ChatUsage, ModelSpec } from '~/lib/llm'
 
 export type LogEntry = {
   role: 'user' | 'assistant'
   content: string
   timestamp: number
-  image?: string // base64 PNG
+  image?: string
+  imageMime?: string
+  usage?: ChatUsage
+  ttftMs?: number
+  totalMs?: number
 }
 
-export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid' | 'full' }) {
+export function LogPane({ entries, mode, spec }: { entries: LogEntry[]; mode: 'hybrid' | 'full'; spec: ModelSpec }) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [showPrompt, setShowPrompt] = useState(false)
 
@@ -69,7 +74,7 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
               <span>
                 {entry.image && (
                   <img
-                    src={`data:image/png;base64,${entry.image}`}
+                    src={`data:${entry.imageMime ?? 'image/png'};base64,${entry.image}`}
                     style={{ maxWidth: '100%', borderRadius: 3, marginBottom: 4, display: 'block' }}
                   />
                 )}
@@ -77,6 +82,17 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
                   {entry.content.length > 200 ? entry.content.slice(0, 200) + '...' : entry.content}
                 </span>
               </span>
+            )}
+            {entry.usage && (
+              <div style={{ color: '#666', fontSize: 9, marginLeft: 18 }}>
+                {entry.usage.cacheReadTokens > 0 ? 'cache hit' : 'cache miss'}
+                {' · '}in {entry.usage.inputTokens}
+                {' · '}out {entry.usage.outputTokens}
+                {' · '}read {entry.usage.cacheReadTokens}
+                {' · '}write {entry.usage.cacheCreationTokens}
+                {entry.ttftMs != null && ` · ttft ${Math.round(entry.ttftMs)}ms`}
+                {entry.totalMs != null && ` · ${Math.round(entry.totalMs)}ms`}
+              </div>
             )}
           </div>
         ))}
@@ -105,10 +121,10 @@ export function LogPane({ entries, mode }: { entries: LogEntry[]; mode: 'hybrid'
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             }}>
               <div style={{ color: '#888', fontSize: 10 }}>
-                Model: <span style={{ color: '#4ec9b0' }}>claude-haiku-4-5-20251001</span>
-                {' | '}temp: <span style={{ color: '#b5cea8' }}>0</span>
-                {' | '}max_tokens: <span style={{ color: '#b5cea8' }}>8192</span>
-                {' | '}cache: <span style={{ color: '#569cd6' }}>ephemeral</span>
+                Model: <span style={{ color: '#4ec9b0' }}>{modelLabel(spec)}</span>
+                {' | '}effort: <span style={{ color: '#b5cea8' }}>{effortLabel(spec)}</span>
+                {' | '}max_tokens: <span style={{ color: '#b5cea8' }}>{mode === 'hybrid' ? HYBRID_MAX_TOKENS : FULL_MAX_TOKENS}</span>
+                {' | '}cache: <span style={{ color: '#569cd6' }}>{cacheLabel(spec)}</span>
               </div>
             </div>
             <pre style={{
@@ -158,18 +174,17 @@ function HybridUserContent({ content }: { content: string }) {
 
 function HybridAssistantContent({ content }: { content: string }) {
   try {
-    const parsed = JSON.parse(content)
-    if (!Array.isArray(parsed)) throw new Error()
+    const parsed = parseHybridCells(content)
     return (
       <span>
         <Punct>[</Punct>
-        {parsed.map((cell: { c: string; e?: string; v?: string }, i: number) => (
+        {parsed.map((cell, i) => (
           <span key={i}>
             {i > 0 && <Punct>, </Punct>}
             <Punct>{'{'}</Punct>
             <Key>c</Key><Punct>:</Punct><Str>{cell.c}</Str>
-            {cell.e && <><Punct>,</Punct><Key>e</Key><Punct>:</Punct><Str>{cell.e}</Str></>}
-            {cell.v && <><Punct>,</Punct><Key>v</Key><Punct>:</Punct><Num>{cell.v}</Num></>}
+            {cell.e != null && cell.e !== '' && <><Punct>,</Punct><Key>e</Key><Punct>:</Punct><Str>{cell.e}</Str></>}
+            {cell.v != null && cell.v !== '' && <><Punct>,</Punct><Key>v</Key><Punct>:</Punct><Num>{cell.v}</Num></>}
             <Punct>{'}'}</Punct>
           </span>
         ))}
@@ -177,7 +192,7 @@ function HybridAssistantContent({ content }: { content: string }) {
       </span>
     )
   } catch {
-    return <span style={{ color: '#6a9955' }}>{content.length > 200 ? content.slice(0, 200) + '...' : content}</span>
+    return <span style={{ color: '#6a9955', wordBreak: 'break-word' }}>{content || '(empty reply)'}</span>
   }
 }
 

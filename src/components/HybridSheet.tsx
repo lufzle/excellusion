@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import type Anthropic from '@anthropic-ai/sdk'
-import { streamChat, HYBRID_SYSTEM } from '~/lib/llm'
-import type { CellData } from '~/lib/llm'
+import { completeChat, HYBRID_SYSTEM, parseHybridCells } from '~/lib/llm'
+import type { CellData, LlmClient } from '~/lib/llm'
 import type { LogEntry } from '~/components/LogPane'
+import { SheetHelp } from '~/components/SheetHelp'
 
-const COLS = 8 // A-H
+const COLS = 4 // A-D
 const ROWS = 8
 
 function colLabel(i: number) {
@@ -16,16 +16,16 @@ function cellId(col: number, row: number) {
 }
 
 function parseCellId(id: string): [number, number] | null {
-  const m = id.match(/^([A-H])(\d+)$/)
+  const m = id.match(/^([A-D])(\d+)$/)
   if (!m) return null
   return [m[1].charCodeAt(0) - 65, parseInt(m[2]) - 1]
 }
 
-type MessageParam = { role: string; content: string }
+type MessageParam = { role: 'user' | 'assistant'; content: string }
 
-export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entry: LogEntry) => void }) {
+export function HybridSheet({ client, onLog }: { client: LlmClient; onLog: (entry: LogEntry) => void }) {
   const [cells, setCells] = useState<CellData[]>([])
-  const [selectedCell, setSelectedCell] = useState('A1')
+  const [selectedCell, setSelectedCell] = useState('B1')
   const [editingCell, setEditingCell] = useState<string | null>(null)
   const [editBuffer, setEditBuffer] = useState('')
   const [loading, setLoading] = useState(false)
@@ -35,8 +35,8 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
   const submittedRef = useRef(false)
 
   const cellMap = new Map(cells.map((c) => [c.c, c]))
-  const getExpression = (id: string) => cellMap.get(id)?.e ?? ''
-  const getDisplay = (id: string) => cellMap.get(id)?.v ?? ''
+  const getExpression = (id: string) => String(cellMap.get(id)?.e ?? '')
+  const getDisplay = (id: string) => String(cellMap.get(id)?.v ?? '')
 
   const submitEdit = useCallback(
     async (cell: string, expression: string) => {
@@ -47,44 +47,53 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
       setEditingCell(null)
       setLoading(true)
       onLog({ role: 'user', content: userContent, timestamp: Date.now() })
+      setCells((prev) => {
+        if (prev.some((c) => c.c.toUpperCase() === cell.toUpperCase())) return prev
+        return [...prev, { c: cell, e: expression, v: expression }]
+      })
 
       try {
         let full = ''
-        for await (const chunk of streamChat(client, HYBRID_SYSTEM, newMessages)) {
+        const turn = await completeChat(client, HYBRID_SYSTEM, newMessages, 'hybrid', (chunk) => {
           full += chunk
-          // Try to parse incrementally
-          let raw = full.trim()
-          if (raw.startsWith('```')) {
-            raw = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-          }
           try {
-            const parsed = JSON.parse(raw) as CellData[]
-            setCells(parsed)
+            setCells(parseHybridCells(full))
           } catch {
-            // not valid JSON yet, keep accumulating
+            // not valid JSON yet
           }
-        }
+        })
 
-        // Final parse
-        let raw = full.trim()
-        if (raw.startsWith('```')) {
-          raw = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-        }
+        let raw = turn.text
         try {
-          setCells(JSON.parse(raw) as CellData[])
+          const parsed = parseHybridCells(turn.text)
+          setCells(parsed)
+          raw = JSON.stringify(parsed)
         } catch {
-          console.error('Final JSON parse failed:', raw)
+          console.error('Final JSON parse failed:', turn.text)
         }
 
         messagesRef.current = [...newMessages, { role: 'assistant', content: raw }]
-        onLog({ role: 'assistant', content: raw, timestamp: Date.now() })
+        onLog({
+          role: 'assistant',
+          content: raw,
+          timestamp: Date.now(),
+          usage: turn.usage,
+          ttftMs: turn.ttftMs,
+          totalMs: turn.totalMs,
+        })
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
         console.error('LLM evaluation failed:', err)
+        onLog({
+          role: 'assistant',
+          content: message,
+          timestamp: Date.now(),
+        })
       } finally {
         setLoading(false)
       }
     },
-    [],
+    [client, onLog],
   )
 
   const startEditing = useCallback(
@@ -108,6 +117,13 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
   useEffect(() => {
     gridRef.current?.focus()
   }, [])
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      void submitEdit('A1', '1')
+    }, 0)
+    return () => window.clearTimeout(t)
+  }, [submitEdit])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -162,7 +178,9 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
           <span style={{ flex: 1, textAlign: 'center', fontSize: 12, color: '#999', fontWeight: 500 }}>
             Excellusion
           </span>
-          <div style={{ width: 52 }} />
+          <div style={{ width: 52, display: 'flex', justifyContent: 'flex-end' }}>
+            <SheetHelp />
+          </div>
         </div>
 
         {/* Dim overlay during LLM request */}
@@ -208,7 +226,14 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
               setEditBuffer(e.target.value)
             }
           }}
+          onFocus={() => {
+            if (!editingCell) startEditing(selectedCell)
+          }}
           onKeyDown={(e) => {
+            if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+              e.stopPropagation()
+              return
+            }
             if (e.key === 'Enter') {
               const cell = editingCell ?? selectedCell
               submitEdit(cell, editingCell ? editBuffer : e.currentTarget.value)
@@ -348,18 +373,8 @@ export function HybridSheet({ client, onLog }: { client: Anthropic; onLog: (entr
                             } else if (e.key === 'Tab') {
                               submit()
                               setSelectedCell(cellId(Math.min(col + 1, COLS - 1), row))
-                            } else if (e.key === 'ArrowUp') {
-                              submit()
-                              setSelectedCell(cellId(col, Math.max(0, row - 1)))
-                            } else if (e.key === 'ArrowDown') {
-                              submit()
-                              setSelectedCell(cellId(col, Math.min(ROWS - 1, row + 1)))
-                            } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
-                              submit()
-                              setSelectedCell(cellId(Math.max(0, col - 1), row))
-                            } else if (e.key === 'ArrowRight' && e.currentTarget.selectionStart === editBuffer.length) {
-                              submit()
-                              setSelectedCell(cellId(Math.min(COLS - 1, col + 1), row))
+                            } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                              e.stopPropagation()
                             }
                           }}
                         />
